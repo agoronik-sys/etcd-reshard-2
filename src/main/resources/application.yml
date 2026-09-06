@@ -1,0 +1,129 @@
+spring:
+  application:
+    name: etcd-reshard
+
+server:
+  port: 8080
+
+etcd:
+  endpoints:
+    - http://localhost:2379
+  prefix: segments/
+  lease-ttl-seconds: 30
+  election-key: leader
+
+segments:
+  database:
+    db1:
+      url: jdbc:postgresql://localhost:5432/db1
+      username: postgres
+      password: postgres
+      ketamaServer: db1
+      ketamaWeight: 1
+    db2:
+      url: jdbc:postgresql://localhost:5432/db2
+      username: postgres
+      password: postgres
+      ketamaServer: db2
+    db3:
+      url: jdbc:postgresql://localhost:5432/db3
+      username: postgres
+      password: postgres
+      ketamaServer: postgres3.example.com:5432
+    db4:
+      url: jdbc:postgresql://localhost:5432/db4
+      username: postgres
+      password: postgres
+      ketamaServer: postgres4.example.com:5432
+
+topologies:
+  v1:
+    version: v1
+    shards: [db1, db2]
+  v2:
+    version: v2
+    shards: [db1, db2, db3, db4]
+
+currentTopology: v1
+targetTopology: v2
+
+migration:
+  maxConcurrentTasks: 5
+  taskPerWorker: 1
+  copyBatchSize: 50000
+  idempotentInsertBatchSize: 500
+  activeSourceBatchDivisor: 10
+  rangeDurationMinutes: 60
+  incrementalCycleSeconds: 10
+  schedulerIntervalMs: 2000
+  # Пулы к shard-БД поднимаются лениво и только при активной migration.
+  # Сколько секунд держать их после остановки/завершения migration.
+  poolReleaseGraceSeconds: 60
+  # Ledger и бизнес-строка записываются одной транзакцией на target.
+  ledger:
+    schema: public
+    tableName: reshard_migration_ledger
+    autoCreate: true
+
+databaseLimits:
+  db1:
+    maxSourceTasks: 2
+    maxTargetTasks: 2
+  db2:
+    maxSourceTasks: 2
+    maxTargetTasks: 2
+  db3:
+    maxSourceTasks: 3
+    maxTargetTasks: 3
+  db4:
+    maxSourceTasks: 3
+    maxTargetTasks: 3
+
+tables:
+  orders:
+    enabled: true
+    tableName: orders
+    shardKey:
+      defaultField: op_id
+      # Обязательно для ledger: выбранное hash-поле глобально уникально между source DB.
+      unique: true
+      rules:
+        - whenField: eq
+          whenValue: b12
+          useField: mb_uid
+    shardAlgorithm: KETAMA
+    rangeStrategy: TIME
+    rangeColumn: created_at
+    idColumn: id
+    businessKey: [external_id]
+    verifyDateColumns: [created_at]
+    verifyCompositeWithId: true
+  users:
+    enabled: true
+    tableName: users
+    shardKey:
+      field: account_id
+      unique: true
+    shardAlgorithm: KETAMA
+    rangeStrategy: TIME
+    rangeColumn: created_at
+    idColumn: id
+    businessKey: [business_uuid]
+    verifyDateColumns: [created_at]
+    verifyCompositeWithId: true
+  events:
+    enabled: false
+    tableName: events
+    shardKey:
+      field: client_id
+      unique: true
+    partition:
+      enabled: true
+      strategy: MONTHLY
+      namePattern: "{table}_{yyyy}_{MM}"
+      indexAfterPartitionComplete: true
+
+resharding:
+  instance-id: ${HOSTNAME:local-${random.uuid}}
+  pod-name: ${POD_NAME:local}
+  version: 1.0.0
